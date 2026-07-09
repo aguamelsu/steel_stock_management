@@ -12,25 +12,44 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Steel Inventory Forecast Dashboard")
+st.title("Inventario Aceros ABC")
 
-# Auth google para data base
-scope = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
 
-creds = Credentials.from_service_account_file(
-    "/workspaces/steel_stock_management/credentials.json",
-    scopes=scope
-)
+##############################
+# GOOGLE AUTH, PREPROCESSING #
+##############################
 
-gc = gspread.authorize(creds)
+@st.cache_data(ttl=300)
+def load_google_sheet():
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
 
-sheet = gc.open_by_url("https://docs.google.com/spreadsheets/d/1qAsFjW2lT8e54FsvsMkfGIHwQEDxsQuf4SzVAMXlK-g/edit?gid=824196706#gid=824196706")
+    creds = Credentials.from_service_account_file(
+        "/workspaces/steel_stock_management/credentials.json",
+        scopes=scope
+    )
 
-inventory_ws = sheet.worksheet('inventario')
-inventory_df = pd.DataFrame(inventory_ws.get_all_records())
+    gc = gspread.authorize(creds)
+
+    sheet = gc.open_by_url(
+        "https://docs.google.com/spreadsheets/d/1qAsFjW2lT8e54FsvsMkfGIHwQEDxsQuf4SzVAMXlK-g/edit"
+    )
+
+    inventory_ws = sheet.worksheet("inventario")
+    inventory_df = pd.DataFrame(inventory_ws.get_all_records())
+
+    suppliers_ws = sheet.worksheet('pedidos_proveedores')
+    suppliers_df = pd.DataFrame(suppliers_ws.get_all_records())
+
+    prices_ws = sheet.worksheet('precios')
+    prices_df = pd.DataFrame(prices_ws.get_all_records())
+
+    return inventory_df, suppliers_df, prices_df
+
+
+inventory_df, suppliers_df_raw, prices_df_raw = load_google_sheet()
 
 df_raw = inventory_df.copy()
 
@@ -52,27 +71,18 @@ df = df_baking.copy()
 df = df.sort_values(["material", "fecha"])
 
 
-# =========================
-# CREATE CONSUMO COLUMN
-# =========================
-
 if "consumo" not in df.columns:
     df["daily_change"] = df.groupby("material")["inventario"].diff()
     df["consumo"] = -df["daily_change"]
     df.loc[df["consumo"] < 0, "consumo"] = 0
     df["consumo"] = df["consumo"].fillna(0)
 
-
-# =========================
-# SIDEBAR FILTERS
-# =========================
-
-st.sidebar.header("Filters")
+# FILTROS
+st.sidebar.header("Filtros")
 
 materials = sorted(df["material"].unique())
-
 selected_material = st.sidebar.selectbox(
-    "Select material",
+    "Seleccionar material",
     materials
 )
 
@@ -80,14 +90,14 @@ min_date = df["fecha"].min().date()
 max_date = df["fecha"].max().date()
 
 date_range = st.sidebar.date_input(
-    "Select date range",
+    "Rango de fechas",
     value=(min_date, max_date),
     min_value=min_date,
     max_value=max_date
 )
 
 if len(date_range) != 2:
-    st.warning("Please select a start and end date.")
+    st.warning("Selecciona fecha de inicio y de fin")
     st.stop()
 
 start_date, end_date = date_range
@@ -99,14 +109,13 @@ filtered_df = df[
 ].copy()
 
 if filtered_df.empty:
-    st.warning("No data available for this filter.")
+    st.warning("No hay datos suficientes para este filtro")
     st.stop()
 
 
-# =========================
-# ARIMA FUNCTION
-# =========================
-
+#########
+# ARIMA #
+#########
 def arima_forecast(series, forecast_days=7):
     series = series.asfreq("D").fillna(0)
 
@@ -135,83 +144,121 @@ def arima_forecast(series, forecast_days=7):
     return forecast, best_order
 
 
-# =========================
-# INVENTORY PARAMETERS
-# =========================
-
+##########################
+# MATH AND STATISTICS #
+##########################
 current_inventory = filtered_df["inventario"].iloc[-1]
 avg_consumption = filtered_df["consumo"].mean()
 std_consumption = filtered_df["consumo"].std()
 
+
+
 lead_time_days = st.sidebar.number_input(
-    "Lead time days",
+    "Días de anticipo para realizar pedido",
     min_value=1,
-    max_value=60,
+    max_value=15,
     value=7
 )
 
 target_days = st.sidebar.number_input(
-    "Target stock days",
+    "Objetivo de días de inventario",
     min_value=1,
     max_value=60,
     value=15
 )
 
-safety_multiplier = st.sidebar.number_input(
-    "Safety stock multiplier",
-    min_value=0.0,
-    max_value=5.0,
-    value=1.65,
-    step=0.05
+# Series for ARIMA
+series = (
+    filtered_df
+    .set_index("fecha")["consumo"]
+    .sort_index()
 )
 
-safety_stock = safety_multiplier * std_consumption * np.sqrt(lead_time_days)
+forecast, best_order = arima_forecast(
+    series,
+    forecast_days=lead_time_days + target_days
+)
 
-reorder_point = (avg_consumption * lead_time_days) + safety_stock
+# Target days by material
+armex_materials = [
+    "ARMEX 15X15",
+    "ARMEX 15X20",
+    "ARMEX DE 15 x 15",
+    "ARMEX DE 15 x 20",
+    "ARMEX 15 x 15",
+    "ARMEX 15 x 20",
+]
 
-target_stock = (avg_consumption * target_days) + safety_stock
+if selected_material.upper().strip() in [m.upper().strip() for m in armex_materials]:
+    target_days = 7
+else:
+    target_days = 14
 
-recommended_qty = max(0, target_stock - current_inventory)
+forecast_horizon = lead_time_days + target_days
+
+forecast, best_order = arima_forecast(
+    series,
+    forecast_days=forecast_horizon
+)
+
+safety_stock = 1.5 * std_consumption * np.sqrt(lead_time_days)
+
+lead_time_demand = forecast.iloc[:lead_time_days].sum()
+
+projected_inventory_arrival = current_inventory - lead_time_demand
+
+target_demand_after_arrival = forecast.iloc[
+    lead_time_days:lead_time_days + target_days
+].sum()
+
+recommended_qty = (
+    target_demand_after_arrival
+    + safety_stock
+    - projected_inventory_arrival
+)
+
+recommended_qty = max(0, recommended_qty)
+
+reorder_point = (
+    forecast.iloc[:forecast_horizon].sum()
+    + safety_stock
+)
 
 buy_now = current_inventory <= reorder_point
 
+if avg_consumption > 0:
+    days_until_stockout = current_inventory / avg_consumption
+    estimated_stockout_date = (
+        filtered_df["fecha"].max()
+        + pd.Timedelta(days=days_until_stockout)
+    )
+else:
+    days_until_stockout = np.inf
+    estimated_stockout_date = None
 
-# =========================
-# KPI CARDS
-# =========================
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Inventario al día", f"{current_inventory:,.2f}")
+col2.metric("Consumo promedio", f"{avg_consumption:,.2f}")
+col3.metric("ROP", f"{reorder_point:,.2f}")
+col4.metric("Cantidad recomendada de compra", f"{recommended_qty:,.2f}")
 
-col1.metric("Current inventory", f"{current_inventory:,.2f}")
-col2.metric("Avg daily consumption", f"{avg_consumption:,.2f}")
-col3.metric("Reorder point", f"{reorder_point:,.2f}")
-col4.metric("Recommended quantity", f"{recommended_qty:,.2f}")
+if estimated_stockout_date is not None:
+    col5.metric(
+        "Stockout estimado",
+        estimated_stockout_date.strftime("%Y-%m-%d")
+    )
+else:
+    col5.metric("Stockout estimado", "Sin consumo")
 
 if buy_now:
-    col5.error("BUY NOW")
+    col6.error("COMPRAR")
 else:
-    col5.success("WAIT")
+    col6.success("ESPERAR")
 
-
-# =========================
-# FORECAST BUTTON
-# =========================
-
-show_forecast = st.button("Forecast next 7 days")
-
-forecast = None
-forecast_dates = None
-best_order = None
+show_forecast = st.button("Predicción próximos 7 días")
 
 if show_forecast:
-    series = (
-        filtered_df
-        .set_index("fecha")["consumo"]
-        .sort_index()
-    )
-
-    forecast, best_order = arima_forecast(series, forecast_days=7)
-
     forecast_dates = pd.date_range(
         start=filtered_df["fecha"].max() + pd.Timedelta(days=1),
         periods=7,
@@ -220,14 +267,15 @@ if show_forecast:
 
     forecast.index = forecast_dates
 
-    st.info(f"Forecasting next 15 days using ARIMA{best_order}")
+    st.info(f"ARIMA{best_order}")
 
 
-# =========================
-# INVENTORY GRAPH
-# =========================
+minimum_stock = avg_consumption * target_days
 
-st.subheader("Inventory over time")
+#########################
+# SCATTER DE INVENTARIO #
+#########################
+st.subheader("INVENTARIO")
 
 fig_inv = go.Figure()
 
@@ -236,7 +284,7 @@ fig_inv.add_trace(
         x=filtered_df["fecha"],
         y=filtered_df["inventario"],
         mode="lines+markers",
-        name="Inventory"
+        name="Inventario"
     )
 )
 
@@ -245,26 +293,72 @@ fig_inv.add_trace(
         x=filtered_df["fecha"],
         y=[reorder_point] * len(filtered_df),
         mode="lines",
-        name="Reorder Point",
+        name="ROP",
         line=dict(dash="dash", color="red")
     )
 )
 
+
+
 fig_inv.update_layout(
-    xaxis_title="Date",
-    yaxis_title="Inventory",
+    xaxis_title="Fecha",
+    yaxis_title="Inventario",
     template="plotly_white",
     height=450
 )
 
+if show_forecast and forecast is not None:
+    last_inv = filtered_df["inventario"].iloc[-1]
+
+    pred_inv = last_inv - forecast.cumsum()
+    pred_inv = pred_inv.clip(lower=0)
+
+    fig_inv.add_trace(
+        go.Scatter(
+            x=forecast.index,
+            y=pred_inv,
+            mode="lines+markers",
+            name="Prediccion 7 dias",
+            line=dict(color="red")
+        )
+    )
+
+all_dates = list(filtered_df["fecha"])
+
+if show_forecast:
+    all_dates.extend(forecast.index)
+
+fig_inv.add_trace(
+    go.Scatter(
+        x=all_dates,
+        y=[minimum_stock] * len(all_dates),
+        mode="lines",
+        name=f"Stock mínimo ({target_days} días)",
+        line=dict(
+            dash="dot",
+            color="green",
+            width=2
+        )
+    )
+)
+
+if estimated_stockout_date is not None:
+    fig_inv.add_vline(
+        x=estimated_stockout_date,
+        line_dash="dot",
+        line_color="orange",
+        annotation_text="Stockout estimado",
+        annotation_position="top"
+    )
+
 st.plotly_chart(fig_inv, use_container_width=True)
 
 
-# =========================
-# CONSUMPTION GRAPH
-# =========================
 
-st.subheader("Consumption over time")
+#############################
+# CONSUMO VS TIEMPO BARPLOT #
+#############################
+st.subheader("CONSUMO A LO LARGO DEL TIEMPO")
 
 fig_cons = go.Figure()
 
@@ -272,24 +366,13 @@ fig_cons.add_trace(
     go.Bar(
         x=filtered_df["fecha"],
         y=filtered_df["consumo"],
-        name="Actual consumption"
+        name="Consumo actual"
     )
 )
 
-if show_forecast and forecast is not None:
-    fig_cons.add_trace(
-        go.Scatter(
-            x=forecast.index,
-            y=forecast.values,
-            mode="lines+markers",
-            name="Forecasted consumption",
-            line=dict(dash="dash")
-        )
-    )
-
 fig_cons.update_layout(
-    xaxis_title="Date",
-    yaxis_title="Consumption",
+    xaxis_title="Fecha",
+    yaxis_title="Consumo",
     template="plotly_white",
     height=450
 )
@@ -297,42 +380,203 @@ fig_cons.update_layout(
 st.plotly_chart(fig_cons, use_container_width=True)
 
 
-# =========================
-# RECOMMENDATION PANEL
-# =========================
-
-st.subheader("Purchase recommendation")
+#################
+# RECOMENDACIÓN #
+#################
+st.subheader("Recomendación:")
 
 left, right = st.columns([1, 2])
 
 with left:
-    st.metric("Recommended quantity to buy", f"{recommended_qty:,.2f}")
-    st.metric("Target stock", f"{target_stock:,.2f}")
-    st.metric("Safety stock", f"{safety_stock:,.2f}")
-    st.metric("Lead time demand", f"{avg_consumption * lead_time_days:,.2f}")
+    st.metric("Cantidad recomendada", f"{recommended_qty:,.2f}")
 
 with right:
     if buy_now:
         st.error(
             f"""
-            Current inventory is below or near the reorder point.
+            Inventario bajo.
 
-            Recommended action: buy **{recommended_qty:,.2f}** units of **{selected_material}**.
+            Comprar **{recommended_qty:,.2f}** unidades de **{selected_material}**.
             """
         )
     else:
         st.success(
             f"""
-            Current inventory is above the reorder point.
+            Sobreinventario o inventario justo.
 
-            Recommended action: no purchase needed right now.
+            No comprar.
             """
         )
 
 
-# =========================
-# DATA TABLE
-# =========================
+##########################
+# HEATMAP DE PROVEEDORES #
+##########################
+suppliers_df_raw.columns= ['material', 
+                        'proveedor', 
+                        'id', 
+                        'pu', 
+                        'cantidad', 
+                        'total', 
+                        'pedido', 
+                        'recibido', 
+                        'espera']
 
-with st.expander("Show filtered data"):
+suppliers_df_baking = suppliers_df_raw.copy()
+
+
+suppliers_df_baking['material'] = suppliers_df_baking['material'].astype('category')
+suppliers_df_baking['proveedor'] = suppliers_df_baking['proveedor'].astype('category')
+suppliers_df_baking['pedido'] = pd.to_datetime(suppliers_df_baking['pedido'], format="%d/%m/%Y")
+suppliers_df_baking['recibido'] = pd.to_datetime(suppliers_df_baking['recibido'], format="%d/%m/%Y")
+
+suppliers_df_baking = suppliers_df_baking.drop(columns='id')
+
+suppliers_df_baking['proveedor'] = suppliers_df_baking['proveedor'].map({
+    'HOME DEPOT MEXICO S DE RL DE CV': 'HOME DEPOT',
+    'MEXLAM CONCEPTOS SA DE CV': 'MEXLAM',
+    'CEMEX': 'CEMEX',
+    'ACEROS VIMAR MEXICO SAPI DE CV': 'VIMAR'
+})
+
+suppliers_df = suppliers_df_baking.copy()
+
+supplier_summary = (
+    suppliers_df
+    .groupby(["material", "proveedor"])
+    .agg(
+        avg_lead=("espera", "mean"),
+        std_lead=("espera", "std"),
+        purchases=("espera", "count")
+    )
+    .reset_index()
+)
+
+pivot = supplier_summary.pivot(
+    index="material",
+    columns="proveedor",
+    values="avg_lead"
+)
+
+pivot = pivot.fillna(0)
+pivot = pivot.sort_index().sort_index(axis=1)
+
+st.subheader("T/E PROVEEDORES 2026")
+
+fig_sup = go.Figure(
+    data=go.Heatmap(
+        z=pivot.values,
+        x=pivot.columns,
+        y=pivot.index,
+        colorscale="balance",
+        colorbar_title="T/E (dias)",
+        hoverongaps=False,
+        text=np.round(pivot.values, 1),
+        texttemplate="%{text}",
+        hovertemplate=(
+            "Proveedor: %{x}<br>"
+            "Material: %{y}<br>"
+            "T/E Promedio: %{z:.1f} días"
+            "<extra></extra>"
+        ),
+        connectgaps=True,
+
+    )
+)
+
+fig_sup.update_layout(
+    xaxis_title="PROVEEDOR",
+    yaxis_title="MATERIAL",
+    template="plotly_white",
+    height=500
+)
+
+st.plotly_chart(fig_sup, use_container_width=True)
+
+
+#######################
+# VALOR DE INVENTARIO #
+#######################
+df_raw = inventory_df.copy()
+
+df_baking = df_raw.copy()
+
+# Convert dates from columns back into rows
+df_baking = df_baking.melt(
+    id_vars="material",
+    var_name="fecha",
+    value_name="inventario"
+)
+
+# Preprocessing
+df_baking['fecha'] = pd.to_datetime(df_baking['fecha'])
+df_baking["material"] = df_baking["material"].astype("category")
+
+df_baking = df_baking.set_index('fecha')
+
+df = df_baking.copy()
+
+# Preprocessing
+prices_df_baking = prices_df_raw.copy()
+prices_df_baking['fecha'] = pd.to_datetime(prices_df_baking['fecha'], dayfirst=True)
+prices_df = prices_df_baking.copy()
+
+prices_df['inv_al_dia'] = df_baking.loc[df_baking.index[-1]]['inventario'].reset_index().drop(columns='fecha')
+prices_df['valor'] = round(prices_df['precio'] * prices_df['inv_al_dia'])
+
+# Graph
+st.subheader("Valor Inventario")
+
+fig_dinero = go.Figure()
+
+fig_dinero.add_trace(
+    go.Bar(
+        x=prices_df["material"],
+        y=prices_df["valor"],
+        name="INVENTARIO EN DINERO",
+        hovertemplate=(
+            "Material: %{x}<br>"
+            "Valor total: $%{y}<br>"
+            "<extra></extra>"
+        )
+    )
+)
+
+fig_dinero.update_layout(
+    xaxis_title="Material",
+    yaxis_title="Dinero",
+    template="plotly_white",
+    height=450
+)
+
+st.markdown(
+    """
+<style>
+[data-testid="stMetricValue"] {
+    font-size: 25px;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+col_p1, col_p2 = st.columns(2)
+
+col_p1.metric(label="Costo Total Inventario",
+        value=f"${prices_df['valor'].sum():,.2f}")
+
+max_row = prices_df.loc[prices_df["valor"].idxmax()]
+col_p2.metric(
+    "Más costoso",
+    f"{max_row['material'].lower()}",
+    f"${max_row['valor']:,.2f}"
+)
+
+
+st.plotly_chart(fig_dinero, use_container_width=True)
+
+
+
+
+with st.expander("Datos filtrados"):
     st.dataframe(filtered_df)
