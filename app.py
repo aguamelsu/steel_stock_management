@@ -18,7 +18,6 @@ st.title("Inventario Aceros ABC")
 ##############################
 # GOOGLE AUTH, PREPROCESSING #
 ##############################
-
 @st.cache_data(ttl=300)
 def load_google_sheet():
     scopes = [
@@ -33,16 +32,19 @@ def load_google_sheet():
 
     gc = gspread.authorize(credentials)
 
-    inventory_ws = gc.open("inventario").sheet1
-    suppliers_ws = gc.open("pedidos_proveedores").sheet1
-    prices_ws = gc.open("precios").sheet1
+    spreadsheet = gc.open_by_url(
+        st.secrets["google_sheets"]["spreadsheet_url"]
+    )
+
+    inventory_ws = spreadsheet.worksheet("inventario")
+    suppliers_ws = spreadsheet.worksheet("pedidos_proveedores")
+    prices_ws = spreadsheet.worksheet("precios")
 
     inventory_df = pd.DataFrame(inventory_ws.get_all_records())
     suppliers_df = pd.DataFrame(suppliers_ws.get_all_records())
     prices_df = pd.DataFrame(prices_ws.get_all_records())
 
     return inventory_df, suppliers_df, prices_df
-
 
 inventory_df, suppliers_df_raw, prices_df_raw = load_google_sheet()
 
@@ -251,18 +253,18 @@ if buy_now:
 else:
     col6.success("ESPERAR")
 
-show_forecast = st.button("Predicción próximos 7 días")
+# show_forecast = st.button("Predicción próximos 7 días")
 
-if show_forecast:
-    forecast_dates = pd.date_range(
-        start=filtered_df["fecha"].max() + pd.Timedelta(days=1),
-        periods=7,
-        freq="D"
-    )
+# if show_forecast:
+#     forecast_dates = pd.date_range(
+#         start=filtered_df["fecha"].max() + pd.Timedelta(days=1),
+#         periods=7,
+#         freq="D"
+#     )
 
-    forecast.index = forecast_dates
+#     forecast.index = forecast_dates
 
-    st.info(f"ARIMA{best_order}")
+#     st.info(f"ARIMA{best_order}")
 
 
 minimum_stock = avg_consumption * target_days
@@ -302,40 +304,40 @@ fig_inv.update_layout(
     height=450
 )
 
-if show_forecast and forecast is not None:
-    last_inv = filtered_df["inventario"].iloc[-1]
+# if show_forecast and forecast is not None:
+#     last_inv = filtered_df["inventario"].iloc[-1]
 
-    pred_inv = last_inv - forecast.cumsum()
-    pred_inv = pred_inv.clip(lower=0)
+#     pred_inv = last_inv - forecast.cumsum()
+#     pred_inv = pred_inv.clip(lower=0)
 
-    fig_inv.add_trace(
-        go.Scatter(
-            x=forecast.index,
-            y=pred_inv,
-            mode="lines+markers",
-            name="Prediccion 7 dias",
-            line=dict(color="red")
-        )
-    )
+#     fig_inv.add_trace(
+#         go.Scatter(
+#             x=forecast.index,
+#             y=pred_inv,
+#             mode="lines+markers",
+#             name="Prediccion 7 dias",
+#             line=dict(color="red")
+#         )
+#     )
 
-all_dates = list(filtered_df["fecha"])
+# all_dates = list(filtered_df["fecha"])
 
-if show_forecast:
-    all_dates.extend(forecast.index)
+# if show_forecast:
+#     all_dates.extend(forecast.index)
 
-fig_inv.add_trace(
-    go.Scatter(
-        x=all_dates,
-        y=[minimum_stock] * len(all_dates),
-        mode="lines",
-        name=f"Stock mínimo ({target_days} días)",
-        line=dict(
-            dash="dot",
-            color="green",
-            width=2
-        )
-    )
-)
+# fig_inv.add_trace(
+#     go.Scatter(
+#         x=all_dates,
+#         y=[minimum_stock] * len(all_dates),
+#         mode="lines",
+#         name=f"Stock mínimo ({target_days} días)",
+#         line=dict(
+#             dash="dot",
+#             color="green",
+#             width=2
+#         )
+#     )
+# )
 
 if estimated_stockout_date is not None:
     fig_inv.add_vline(
