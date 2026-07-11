@@ -320,24 +320,24 @@ fig_inv.update_layout(
 #         )
 #     )
 
-# all_dates = list(filtered_df["fecha"])
+all_dates = list(filtered_df["fecha"])
 
 # if show_forecast:
 #     all_dates.extend(forecast.index)
 
-# fig_inv.add_trace(
-#     go.Scatter(
-#         x=all_dates,
-#         y=[minimum_stock] * len(all_dates),
-#         mode="lines",
-#         name=f"Stock mínimo ({target_days} días)",
-#         line=dict(
-#             dash="dot",
-#             color="green",
-#             width=2
-#         )
-#     )
-# )
+fig_inv.add_trace(
+    go.Scatter(
+        x=all_dates,
+        y=[minimum_stock] * len(all_dates),
+        mode="lines",
+        name=f"Stock mínimo ({target_days} días)",
+        line=dict(
+            dash="dot",
+            color="green",
+            width=2
+        )
+    )
+)
 
 if estimated_stockout_date is not None:
     fig_inv.add_vline(
