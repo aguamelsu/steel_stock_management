@@ -33,12 +33,9 @@ def load_google_sheet():
 
     gc = gspread.authorize(credentials)
 
-    spreadsheet_url = st.secrets["google_sheets"]["spreadsheet_url"]
-    spreadsheet = gc.open_by_url(spreadsheet_url)
-
-    inventory_ws = spreadsheet.worksheet("inventario")
-    suppliers_ws = spreadsheet.worksheet("pedidos_proveedores")
-    prices_ws = spreadsheet.worksheet("precios")
+    inventory_ws = gc.open("inventario").sheet1
+    suppliers_ws = gc.open("pedidos_proveedores").sheet1
+    prices_ws = gc.open("precios").sheet1
 
     inventory_df = pd.DataFrame(inventory_ws.get_all_records())
     suppliers_df = pd.DataFrame(suppliers_ws.get_all_records())
