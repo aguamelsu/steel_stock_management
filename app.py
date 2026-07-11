@@ -21,29 +21,27 @@ st.title("Inventario Aceros ABC")
 
 @st.cache_data(ttl=300)
 def load_google_sheet():
-    scope = [
+    scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
+        "https://www.googleapis.com/auth/drive",
     ]
 
-    creds = Credentials.from_service_account_file(
-        "/workspaces/steel_stock_management/credentials.json",
-        scopes=scope
+    credentials = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]),
+        scopes=scopes,
     )
 
-    gc = gspread.authorize(creds)
+    gc = gspread.authorize(credentials)
 
-    sheet = gc.open_by_url(
-        "https://docs.google.com/spreadsheets/d/1qAsFjW2lT8e54FsvsMkfGIHwQEDxsQuf4SzVAMXlK-g/edit"
-    )
+    spreadsheet_url = st.secrets["google_sheets"]["spreadsheet_url"]
+    spreadsheet = gc.open_by_url(spreadsheet_url)
 
-    inventory_ws = sheet.worksheet("inventario")
+    inventory_ws = spreadsheet.worksheet("inventario")
+    suppliers_ws = spreadsheet.worksheet("pedidos_proveedores")
+    prices_ws = spreadsheet.worksheet("precios")
+
     inventory_df = pd.DataFrame(inventory_ws.get_all_records())
-
-    suppliers_ws = sheet.worksheet('pedidos_proveedores')
     suppliers_df = pd.DataFrame(suppliers_ws.get_all_records())
-
-    prices_ws = sheet.worksheet('precios')
     prices_df = pd.DataFrame(prices_ws.get_all_records())
 
     return inventory_df, suppliers_df, prices_df
