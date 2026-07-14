@@ -147,7 +147,7 @@ def arima_forecast(series, forecast_days=7):
 current_inventory = filtered_df["inventario"].iloc[-1]
 avg_consumption = filtered_df["consumo"].mean()
 std_consumption = filtered_df["consumo"].std()
-
+cv = std_consumption / avg_consumption
 
 
 lead_time_days = st.sidebar.number_input(
@@ -208,10 +208,14 @@ target_demand_after_arrival = forecast.iloc[
     lead_time_days:lead_time_days + target_days
 ].sum()
 
-recommended_qty = (
-    target_demand_after_arrival
-    + safety_stock
-    - projected_inventory_arrival
+buffer = np.clip(cv, 0.10, 0.50)
+
+target_stock = avg_consumption * (lead_time_days + target_days) + safety_stock
+maximum_inventory = target_stock * (1 + buffer)
+
+recommended_qty = max(
+    target_stock - projected_inventory_arrival,
+    0
 )
 
 recommended_qty = max(0, recommended_qty)
@@ -288,13 +292,12 @@ fig_inv.add_trace(
 fig_inv.add_trace(
     go.Scatter(
         x=filtered_df["fecha"],
-        y=[reorder_point] * len(filtered_df),
+        y=[maximum_inventory] * len(filtered_df),
         mode="lines",
-        name="ROP",
-        line=dict(dash="dash", color="red")
+        name="Inventario Máximo",
+        line=dict(dash="dash", color="black")
     )
 )
-
 
 
 fig_inv.update_layout(
@@ -302,6 +305,16 @@ fig_inv.update_layout(
     yaxis_title="Inventario",
     template="plotly_white",
     height=450
+)
+
+fig_inv.add_trace(
+    go.Scatter(
+        x=filtered_df["fecha"],
+        y=[reorder_point] * len(filtered_df),
+        mode="lines",
+        name="ROP",
+        line=dict(dash="dash", color="red")
+    )
 )
 
 # if show_forecast and forecast is not None:
