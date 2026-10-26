@@ -1,0 +1,4 @@
+[client]
+# Producción: los usuarios ven solo el tipo de excepción, sin mensaje ni traceback
+# (el detalle completo sigue en los logs del servidor).
+showErrorDetails = "type"

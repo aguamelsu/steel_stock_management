@@ -47,7 +47,12 @@ import warnings
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import matplotlib
+
+# Backend sin interfaz gráfica: las gráficas solo se guardan como PNG, y el
+# backend interactivo por defecto (TkAgg) crea ventanas que nunca se muestran.
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
 
 # ---------------------------------------------------------------------
 # CONFIGURACIÓN
@@ -148,10 +153,12 @@ def longest_true_run(values):
 # ---------------------------------------------------------------------
 
 def load_data(path):
-    inv_raw = pd.read_excel(path, sheet_name="inventario", header=None)
-    purchases = pd.read_excel(path, sheet_name="pedidos_proveedores")
-    mat_dict = pd.read_excel(path, sheet_name="mat_dict")
-    prices = pd.read_excel(path, sheet_name="precios")
+    # Abrir el libro una sola vez en lugar de una vez por hoja
+    with pd.ExcelFile(path) as book:
+        inv_raw = pd.read_excel(book, sheet_name="inventario", header=None)
+        purchases = pd.read_excel(book, sheet_name="pedidos_proveedores")
+        mat_dict = pd.read_excel(book, sheet_name="mat_dict")
+        prices = pd.read_excel(book, sheet_name="precios")
 
     # ----- Inventario -----
     header = inv_raw.iloc[0].tolist()
@@ -221,12 +228,27 @@ def reconstruct_consumption(inv_long, purchases):
 
     receipts = purchases.dropna(subset=["recibido", "Cantidad"]).copy()
 
+    # Recepciones separadas por material una sola vez (mismo orden de filas),
+    # en lugar de filtrar la tabla completa en cada intervalo.
+    receipts_by_material = {
+        m: (r["recibido"].to_numpy(), r["Cantidad"].to_numpy())
+        for m, r in receipts.groupby("Material", sort=False)
+    }
+    no_receipts = (
+        receipts["recibido"].to_numpy()[:0],
+        receipts["Cantidad"].to_numpy()[:0],
+    )
+
     for material, g in inv_long.groupby("material"):
         g = g.sort_values("fecha").reset_index(drop=True)
+        receipt_dates, receipt_qtys = receipts_by_material.get(material, no_receipts)
+
+        dates = list(g["fecha"])
+        stocks = g["inventario"].to_numpy()
 
         for i in range(len(g)):
-            date = g.loc[i, "fecha"]
-            stock = g.loc[i, "inventario"]
+            date = dates[i]
+            stock = stocks[i]
 
             if i == 0:
                 rows.append({
@@ -243,18 +265,17 @@ def reconstruct_consumption(inv_long, purchases):
                 })
                 continue
 
-            prev_date = g.loc[i - 1, "fecha"]
-            prev_stock = g.loc[i - 1, "inventario"]
+            prev_date = dates[i - 1]
+            prev_stock = stocks[i - 1]
 
             days = count_days_between(prev_date, date, DAYS_MODE)
 
-            mat_receipts = receipts[
-                (receipts["Material"] == material) &
-                (receipts["recibido"] > prev_date) &
-                (receipts["recibido"] <= date)
-            ]
+            in_interval = (
+                (receipt_dates > prev_date.to_datetime64()) &
+                (receipt_dates <= date.to_datetime64())
+            )
 
-            receipt_qty = mat_receipts["Cantidad"].sum()
+            receipt_qty = receipt_qtys[in_interval].sum()
 
             raw_consumption = prev_stock + receipt_qty - stock
 
@@ -386,18 +407,13 @@ def evaluate_current_policy(daily):
             .asfreq("D", fill_value=0)
         )
 
-        for date in s.index:
-            trailing_start = date - pd.Timedelta(days=TRAILING_DAYS)
-            trailing_end = date - pd.Timedelta(days=1)
-
-            forward_start = date
-            forward_end = date + pd.Timedelta(days=FORWARD_DAYS - 1)
-
-            hist = s.loc[trailing_start:trailing_end]
-            fut = s.loc[forward_start:forward_end]
-
-            if len(hist) < TRAILING_DAYS or len(fut) < FORWARD_DAYS:
-                continue
+        # s tiene frecuencia diaria continua, así que las ventanas
+        # [fecha-7d, fecha-1d] y [fecha, fecha+4d] son posiciones fijas; solo se
+        # recorren las fechas que tienen ambas ventanas completas.
+        for i in range(TRAILING_DAYS, len(s) - FORWARD_DAYS + 1):
+            date = s.index[i]
+            hist = s.iloc[i - TRAILING_DAYS:i]
+            fut = s.iloc[i:i + FORWARD_DAYS]
 
             daily_avg = hist.mean()
             forecast_5d = daily_avg * FORWARD_DAYS

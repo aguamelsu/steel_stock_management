@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Solo para script.py (reporte offline) y pruebas; la app de Streamlit no los necesita
+openpyxl==3.1.5
+matplotlib==3.11.2
+pytest==9.1.1
