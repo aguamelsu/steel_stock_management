@@ -9,8 +9,12 @@ import pytest
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
+import pandas as pd  # noqa: E402
+
 import inventory  # noqa: E402
+import ui  # noqa: E402
 from tests import _reference as ref  # noqa: E402
+from tests.conftest import DATA_DIR  # noqa: E402
 
 APP = Path(__file__).resolve().parent.parent / "app.py"
 ARMEX = "ARMEX DE 15 x 15"
@@ -26,6 +30,7 @@ def app(monkeypatch, inventory_wide, suppliers_raw, prices_raw):
         "inventario": inventory_wide,
         "pedidos_proveedores": suppliers_raw,
         "precios": prices_raw,
+        "mat_dict": pd.read_csv(DATA_DIR / "mat_dict.csv"),
     }
 
     class Worksheet:
@@ -130,3 +135,21 @@ def test_changing_material_resets_target_days_to_its_default(app):
 
     app.selectbox[0].select(ARMEX).run()
     assert _target_days_input(app).value == 7
+
+
+def test_redesigned_supplier_and_value_sections(app, inventory_wide, prices_raw):
+    app.run()
+    assert not app.exception
+
+    subheaders = [s.value for s in app.subheader]
+    assert "Tiempos de entrega por proveedor" in subheaders and "Valor del inventario" in subheaders
+    assert "T/E PROVEEDORES 2026" not in subheaders
+
+    original_total = ref.app_inventory_value(inventory_wide, prices_raw)["valor"].sum()
+    assert _metric(app, "Valor total (MXN)") == ui.mxn(original_total)
+
+    supplier_table = next(d.value for d in app.dataframe if "Mediana (días)" in d.value.columns)
+    assert (supplier_table["Mediana (días)"] > 0).all()
+
+    badges = " ".join(m.value for m in app.markdown)
+    assert "desactualizado" in badges  # los datos de prueba son de 2026 (mayo a julio)

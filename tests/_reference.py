@@ -104,6 +104,7 @@ def app_metrics(filtered_df, forecast, lead_time_days, selected_material):
 
 
 def app_suppliers_pivot(suppliers_df_raw):
+    """Heatmap original: rellenaba con 0 los pares material-proveedor sin entregas."""
     suppliers_df_raw = suppliers_df_raw.copy()
     suppliers_df_raw.columns = ['material', 'proveedor', 'id', 'pu', 'cantidad',
                                 'total', 'pedido', 'recibido', 'espera']

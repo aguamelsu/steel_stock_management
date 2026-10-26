@@ -33,31 +33,6 @@ def test_consumption_is_positive_drops_only():
     assert b == [0.0, 0.0, 4.0, 1.0]
 
 
-def test_supplier_pivot_matches_original(suppliers_raw):
-    new = inventory.supplier_lead_time_pivot(inventory.prepare_suppliers(suppliers_raw))
-    assert_frame_equal(new, ref.app_suppliers_pivot(suppliers_raw), check_exact=True)
-
-
-def test_prepare_suppliers_does_not_mutate_input(suppliers_raw):
-    before = suppliers_raw.copy()
-    inventory.prepare_suppliers(suppliers_raw)
-    assert_frame_equal(suppliers_raw, before)
-
-
-def test_inventory_value_matches_original(inventory_wide, prices_raw):
-    new = inventory.inventory_value(inventory.melt_inventory(inventory_wide), prices_raw)
-    assert_frame_equal(new, ref.app_inventory_value(inventory_wide, prices_raw), check_exact=True)
-
-
-def test_inventory_value_uses_last_date_column():
-    wide = pd.DataFrame({"material": ["A", "B"], "2026-01-01": [1.0, 2.0], "2026-01-02": [3.0, 4.0]})
-    prices = pd.DataFrame({"material": ["A", "B"], "fecha": ["01/02/2026"] * 2, "precio": [10.4, 2.5]})
-    out = inventory.inventory_value(inventory.melt_inventory(wide), prices)
-    assert out["inv_al_dia"].tolist() == [3.0, 4.0]
-    assert out["valor"].tolist() == [round(31.2), round(10.0)]
-    assert out["fecha"].iloc[0] == pd.Timestamp("2026-02-01")  # dayfirst
-
-
 # --------------------------- filtering ---------------------------
 
 def test_filter_matches_original_on_real_data(inventory_wide):

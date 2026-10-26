@@ -18,26 +18,6 @@ ARMEX_MATERIALS = [
     "ARMEX 15 x 20",
 ]
 
-SUPPLIER_COLUMNS = [
-    'material',
-    'proveedor',
-    'id',
-    'pu',
-    'cantidad',
-    'total',
-    'pedido',
-    'recibido',
-    'espera',
-]
-
-SUPPLIER_NAMES = {
-    'HOME DEPOT MEXICO S DE RL DE CV': 'HOME DEPOT',
-    'MEXLAM CONCEPTOS SA DE CV': 'MEXLAM',
-    'CEMEX': 'CEMEX',
-    'ACEROS VIMAR MEXICO SAPI DE CV': 'VIMAR'
-}
-
-
 ##############################
 # PREPROCESSING              #
 ##############################
@@ -65,60 +45,6 @@ def add_consumption(inventory_long):
     df["consumo"] = df["consumo"].fillna(0)
 
     return df
-
-
-def prepare_suppliers(suppliers_df_raw):
-    suppliers_df = suppliers_df_raw.copy()
-    suppliers_df.columns = SUPPLIER_COLUMNS
-
-    suppliers_df['material'] = suppliers_df['material'].astype('category')
-    suppliers_df['proveedor'] = suppliers_df['proveedor'].astype('category')
-    suppliers_df['pedido'] = pd.to_datetime(suppliers_df['pedido'], format="%d/%m/%Y")
-    suppliers_df['recibido'] = pd.to_datetime(suppliers_df['recibido'], format="%d/%m/%Y")
-
-    suppliers_df = suppliers_df.drop(columns='id')
-
-    suppliers_df['proveedor'] = suppliers_df['proveedor'].map(SUPPLIER_NAMES)
-
-    return suppliers_df
-
-
-def supplier_lead_time_pivot(suppliers_df):
-    """Matriz material x proveedor con el tiempo de espera promedio."""
-    supplier_summary = (
-        suppliers_df
-        .groupby(["material", "proveedor"])
-        .agg(
-            avg_lead=("espera", "mean"),
-            std_lead=("espera", "std"),
-            purchases=("espera", "count")
-        )
-        .reset_index()
-    )
-
-    pivot = supplier_summary.pivot(
-        index="material",
-        columns="proveedor",
-        values="avg_lead"
-    )
-
-    pivot = pivot.fillna(0)
-    pivot = pivot.sort_index().sort_index(axis=1)
-
-    return pivot
-
-
-def inventory_value(inventory_long, prices_df_raw):
-    """Precio x inventario de la última fecha de la hoja, por material."""
-    by_date = inventory_long.set_index('fecha')
-
-    prices_df = prices_df_raw.copy()
-    prices_df['fecha'] = pd.to_datetime(prices_df['fecha'], dayfirst=True)
-
-    prices_df['inv_al_dia'] = by_date.loc[by_date.index[-1]]['inventario'].reset_index().drop(columns='fecha')
-    prices_df['valor'] = round(prices_df['precio'] * prices_df['inv_al_dia'])
-
-    return prices_df
 
 
 def filter_inventory(df, material, start_date, end_date):
@@ -190,21 +116,29 @@ def consumption_stats(filtered_df):
     return current_inventory, avg_consumption, std_consumption, cv
 
 
+def inventory_targets(avg_consumption, std_consumption, cv, lead_time_days, target_days):
+    """Stock de seguridad, inventario objetivo e inventario máximo (no usan el pronóstico)."""
+    safety_stock = 1.5 * std_consumption * np.sqrt(lead_time_days)
+    buffer = np.clip(cv, 0.10, 0.50)
+
+    target_stock = avg_consumption * (lead_time_days + target_days) + safety_stock
+    maximum_inventory = target_stock * (1 + buffer)
+
+    return safety_stock, target_stock, maximum_inventory
+
+
 def replenishment_metrics(filtered_df, forecast, lead_time_days, target_days):
     current_inventory, avg_consumption, std_consumption, cv = consumption_stats(filtered_df)
 
     forecast_horizon = lead_time_days + target_days
 
-    safety_stock = 1.5 * std_consumption * np.sqrt(lead_time_days)
+    safety_stock, target_stock, maximum_inventory = inventory_targets(
+        avg_consumption, std_consumption, cv, lead_time_days, target_days
+    )
 
     lead_time_demand = forecast.iloc[:lead_time_days].sum()
 
     projected_inventory_arrival = current_inventory - lead_time_demand
-
-    buffer = np.clip(cv, 0.10, 0.50)
-
-    target_stock = avg_consumption * (lead_time_days + target_days) + safety_stock
-    maximum_inventory = target_stock * (1 + buffer)
 
     recommended_qty = max(
         target_stock - projected_inventory_arrival,

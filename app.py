@@ -1,17 +1,22 @@
 import streamlit as st
-import numpy as np
 import plotly.graph_objects as go
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
 import inventory
+import procurement
+import sections
+import ui
+import valuation
 
 # Configurar pagina
 st.set_page_config(
     page_title="Steel Inventory Dashboard",
     layout="wide"
 )
+
+ui.inject_css()
 
 st.title("Inventario Aceros ABC")
 
@@ -49,22 +54,25 @@ def load_google_sheet():
             raise gspread.exceptions.WorksheetNotFound(title)
         return pd.DataFrame(worksheets[title].get_all_records())
 
-    return records("inventario"), records("pedidos_proveedores"), records("precios")
+    # mat_dict solo aporta unidades de medida; si no existe, la app sigue igual
+    mat_dict_df = records("mat_dict") if "mat_dict" in worksheets else None
+
+    return (records("inventario"), records("pedidos_proveedores"),
+            records("precios"), mat_dict_df)
 
 
 @st.cache_data(ttl=300)
 def load_data():
     """Descarga y preprocesa todo una vez por TTL, no en cada rerun."""
-    inventory_df, suppliers_df_raw, prices_df_raw = load_google_sheet()
+    inventory_df, suppliers_df_raw, prices_df_raw, mat_dict_df = load_google_sheet()
 
     inventory_long = inventory.melt_inventory(inventory_df)
     df = inventory.add_consumption(inventory_long)
-    supplier_pivot = inventory.supplier_lead_time_pivot(
-        inventory.prepare_suppliers(suppliers_df_raw)
-    )
-    prices_df = inventory.inventory_value(inventory_long, prices_df_raw)
+    purchase_lines = procurement.prepare_purchase_lines(suppliers_df_raw)
+    book = valuation.price_book(prices_df_raw, purchase_lines)
+    units = valuation.material_units(mat_dict_df)
 
-    return df, supplier_pivot, prices_df
+    return df, inventory_long, purchase_lines, book, units, ui.now()
 
 
 # El grid search de ARIMA (32 ajustes) es lo más costoso de la app: se ajusta
@@ -76,7 +84,14 @@ fit_best_arima = st.cache_data(max_entries=64, show_spinner=False)(
     inventory.fit_best_arima
 )
 
-df, pivot, prices_df = load_data()
+df, inventory_long, purchase_lines, book, units, fetched_at = load_data()
+
+as_of = ui.today()
+st.markdown(
+    ui.freshness_badge("Existencias registradas al", inventory_long["fecha"].iloc[-1],
+                       as_of, valuation.STALE_QUANTITIES_AFTER_DAYS)
+    + f" :gray[Google Sheets consultado a las {fetched_at:%H:%M} · se actualiza cada 5 min]"
+)
 
 # FILTROS
 st.sidebar.header("Filtros")
@@ -334,97 +349,14 @@ with right:
         )
 
 
-##########################
-# HEATMAP DE PROVEEDORES #
-##########################
-st.subheader("T/E PROVEEDORES 2026")
+#################################
+# PROVEEDORES Y VALOR INVENTARIO #
+#################################
+st.divider()
+sections.render_supplier_lead_times(purchase_lines, selected_material, as_of)
 
-fig_sup = go.Figure(
-    data=go.Heatmap(
-        z=pivot.values,
-        x=pivot.columns,
-        y=pivot.index,
-        colorscale="balance",
-        colorbar_title="T/E (dias)",
-        hoverongaps=False,
-        text=np.round(pivot.values, 1),
-        texttemplate="%{text}",
-        hovertemplate=(
-            "Proveedor: %{x}<br>"
-            "Material: %{y}<br>"
-            "T/E Promedio: %{z:.1f} días"
-            "<extra></extra>"
-        ),
-        connectgaps=True,
-
-    )
-)
-
-fig_sup.update_layout(
-    xaxis_title="PROVEEDOR",
-    yaxis_title="MATERIAL",
-    template="plotly_white",
-    height=500
-)
-
-st.plotly_chart(fig_sup, use_container_width=True)
-
-
-#######################
-# VALOR DE INVENTARIO #
-#######################
-# Graph
-st.subheader("Valor Inventario")
-
-fig_dinero = go.Figure()
-
-fig_dinero.add_trace(
-    go.Bar(
-        x=prices_df["material"],
-        y=prices_df["valor"],
-        name="INVENTARIO EN DINERO",
-        hovertemplate=(
-            "Material: %{x}<br>"
-            "Valor total: $%{y}<br>"
-            "<extra></extra>"
-        )
-    )
-)
-
-fig_dinero.update_layout(
-    xaxis_title="Material",
-    yaxis_title="Dinero",
-    template="plotly_white",
-    height=450
-)
-
-st.markdown(
-    """
-<style>
-[data-testid="stMetricValue"] {
-    font-size: 25px;
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-col_p1, col_p2 = st.columns(2)
-
-col_p1.metric(label="Costo Total Inventario",
-        value=f"${prices_df['valor'].sum():,.2f}")
-
-max_row = prices_df.loc[prices_df["valor"].idxmax()]
-col_p2.metric(
-    "Más costoso",
-    f"{max_row['material'].lower()}",
-    f"${max_row['valor']:,.2f}"
-)
-
-
-st.plotly_chart(fig_dinero, use_container_width=True)
-
-
+st.divider()
+sections.render_inventory_value(inventory_long, df, book, units, lead_time_days, as_of)
 
 
 with st.expander("Datos filtrados"):
