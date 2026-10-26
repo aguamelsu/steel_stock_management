@@ -3,3 +3,4 @@
 __pycache__
 credentials.json
 .streamlit/secrets.toml
+.pytest_cache
