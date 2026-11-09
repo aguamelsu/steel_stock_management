@@ -86,13 +86,6 @@ fit_best_arima = st.cache_data(max_entries=64, show_spinner=False)(
 
 df, inventory_long, purchase_lines, book, units, fetched_at = load_data()
 
-as_of = ui.today()
-st.markdown(
-    ui.freshness_badge("Existencias registradas al", inventory_long["fecha"].iloc[-1],
-                       as_of, valuation.STALE_QUANTITIES_AFTER_DAYS)
-    + f" :gray[Google Sheets consultado a las {fetched_at:%H:%M} · se actualiza cada 5 min]"
-)
-
 # FILTROS
 st.sidebar.header("Filtros")
 
